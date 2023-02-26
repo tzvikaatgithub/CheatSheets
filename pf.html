@@ -1,0 +1,1049 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<style type="text/css">
+
+{
+
+        font-size : small;
+
+        font-family : Arial;
+
+        font-weight : normal;
+
+        font-style : normal;
+
+        color : #000000;
+
+}
+
+
+
+        A { color:blue; text-decoration:none; }
+
+        A:hover { color:teal; }
+
+
+
+
+
+</style>
+<title>A Beginner's Guide to Firewalling with pf</title>
+<link rel="stylesheet" href="main.css" type="text/css" />
+</head>
+<body>
+<center>
+<h2>A Beginner's Guide To Firewalling with pf</h2>
+</center>
+<p>This guide is written for the person very new to firewalling.
+Please realize that the sample firewall we build should not be
+considered appropriate for actual use. I just try to cover a few
+basics, that took me awhile to grasp from the better known (and
+more detailed) documentation referenced below</p>
+<p>It's my hope that this guide will not only get you started, but
+give you enough of a grasp of using pf so that you will then be
+able to go to those more advanced guides and perfect your
+firewalling skills.</p>
+<p>The pf packet filter was developed for OpenBSD but is now
+included in FreeBSD, which is where I've used it. Having it run at
+boot and the like is covered in the various documents, however I'll
+quickly run through the steps for FreeBSD.</p>
+<p>First one adds to /etc/rc.conf</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pf_enable="YES"
+pf_rules="/etc/pf.conf"
+pflog_enable="YES"
+pflog_logfile="/var/log/pflog"
+</pre></td>
+</tr>
+</table>
+<p>This will start the pf filter at boot. We'll cover starting it
+while running after we put in some rules.</p>
+<h4>A few precautions</h4>
+While experimenting with rules on a remote machine, please be
+careful. Many people have shut themselves out of a remote machine.
+One simple solution is to open a session in <a href="screentmux.html">
+screen or tmux</a> on the machine you're working on.  In that session, as
+root, run 
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+sleep 120; pfctl -d
+</pre>
+</td>
+</tr>
+</table>
+<p>
+which will disable pf after 2 minutes. 
+Another, slightly more involved solution is to add a quick cronjob to turn off pf, so
+that if you do make this mistake, you can get back into the box
+shortly. Don't do this now, wait till we've made some rules, but
+let's make a few preparations. 
+Make a quick change to
+/usr/local/etc/sudoers (in FreeBSD, it may be elsewhere on other
+operating systems.)
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+visudo -f /usr/local/etc/sudoers
+</pre></td>
+</tr>
+</table>
+<p>If your user name is john, then add a line (below any other
+lines giving you less privileges--sudo processes the sudoers file
+from top to bottom)</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+john    ALL= NOPASSWD: /sbin/pfctl
+</pre></td>
+</tr>
+</table>
+<p>Now we edit the crontab.</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+crontab -e
+</pre></td>
+</tr>
+</table>
+<p>Then, in your crontab add</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+*/2 * * * * /usr/local/bin/sudo /sbin/pfctl -d
+</pre></td>
+</tr>
+</table>
+This has the same effect, to stop pf after 2 minutes.  (Change the
+time as desired.)
+<p>I dislike the NOPASSWD option, as it makes it easier to make
+serious mistakes--however, when I'm testing a bunch of pf rules, I
+usually put it in there as I'm constantly using pfctl. When done,
+and the ruleset works, I remove the NOPASSWD part.</p>
+<p>Ok, now that we've ensured we'll be able to get back in the box,
+let's create an /etc/pf.conf file. In FreeBSD, the file already
+exists. What I usually do is start in my home directory, create the
+rules, and then test them, loading them with sudo. Then, when it's
+working the way I want it to work, I backup the default pf.conf and
+copy it over.</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+mv /etc/pf.conf /etc/pf.conf.bak
+cp pf.conf /etc
+</pre></td>
+</tr>
+</table>
+<p>(As we haven't yet created the file, don't do it yet) :).</p>
+<h4>A simple ruleset</h4>
+In your home directory, open up your favorite text editor and
+create a file called pf.conf to start setting your rules. We start
+with some macros. Macros are similar to variables in programming. A
+brief example
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass = "{ 80 22 }"
+</pre></td>
+</tr>
+</table>
+<p>We've created a macro. Later, when we make rules, rather than
+having to make one rule for port 80 and a second for port 22 we can
+simply do something like</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass out proto tcp to port $tcp_pass
+</pre></td>
+</tr>
+</table>
+<p>(Note that you need the $ in front of the macro's name.)</p>
+
+<p>Then, if we decide we want to add port 123, the Network Time
+Protocol, rather than write a new rule, we can simply add 123 to
+our macro. We can also realize we forgot to allow it to get email
+so we'll add all three, pop3 to get email, smtp to send it and ntp
+to connect to time servers.</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass= "{ 80 22 25 110 123 }"
+</pre></td>
+</tr>
+</table>
+
+<p>The pf filter will read the rules we create from top to bottom.
+So, we start with a rule to block everything</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+block all
+</pre></td>
+</tr>
+</table>
+<p>This keeps the box pretty secure, but we won't be able to do
+anything. So, in order to access web pages, allow the Network Time
+Protocol to connect to a time server and to ssh to an outside
+machine, we can use the macro we defined. Our pf.conf looks like
+this.</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass = "{ 80 22 25 110 123 }"
+block all
+pass out on fxp0 proto tcp to any port $tcp_pass keep state
+</pre></td>
+</tr>
+</table>
+<p>Let's look at what we've done so far. First, we defined a macro.
+We used port numbers. While one can mix and match if they want, for
+clarity's sake, we try to use the same pattern for all ports. We
+can also put in commas if we want or the protocol name if it's
+defined in /etc/services. So, that macro could actually read</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass = "{ 80 ssh, ntp smtp 110}"
+</pre></td>
+</tr>
+</table>
+<p>and still work. However, one should strive for consistancy.</p>
+
+My personal habit is to have one white space between left bracket and
+first port and another space between the last port listed and the white
+bracket.  (However, that white space, as shown in the example above, is
+also optional--that is one can do { 80 or {80 and they will both work. 
+Also, keeping in them in numerical order helps you remember
+what you're doing.  So, let's clean up the above example a little bit.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass= "{ 22 25 80 110 123 }"
+</pre>
+</td>
+</tr>
+</table>
+<p>
+
+
+
+<p>You can only use a name if the port is defined in /etc/services.
+For instance, if you decide to set ssh to only accept connections
+on port 1222, you would have to put 1222 in that macro, NOT ssh.
+Port 1222 is defined in /etc/services as nerv, the SNI R&amp;D
+network, so if you check your rules with pfctl, it'll show that you
+have a rule to pass out to nerv. To avoid confusion, if you're
+going to use a non-standard port, use something that isn't listed
+in /etc/services.</p>
+<p>You can also specify a range of ports with a colon. For
+instance, if I wanted to add samba, which uses ports 137, 138 and
+139, I could have added 137:139.</p>
+<p>Next, we block everything as our default. Now, we have to add
+rules to let things through. Remember, pf processes rules from top
+to bottom.</p>
+<p>So, we are allowing out web traffic, ssh connections, sending
+mail, getting mail with pop3, and we're able to contact time
+servers.</p>
+<p>So, we start with the action, pass. We're passing, not blocking.
+The order of syntax is important. I'm just giving the basic options
+here, again, this article can be considered a prep for more
+advanced tutorials.</p>
+<p>pass out means we're allowing things out, not necessarily in.
+The next part, on fxp0 refers to the interface--in this case, a
+network card that in FreeBSD parlance is called fxp0. (An Intel
+card).</p>
+<p>The to any part means that we're allowing it to go anywhere.
+Next, we specify the ports we're talking about--here we use our
+macro, tcp_pass, meaning we're allowing to the ports mentioned
+above.</p>
+<p>The keep state part can be important. It means that once we've
+established the connection, pf is going to keep track of it, so the
+answer from, for example, a web page, doesn't have to go through
+checking each rule, but can just be opened. The same with pop3. One
+uses pop3 to contact a pop3 server (hrrm, obviously), and the
+server answers. As we have the keep state keywords, the server's
+answer can go right through once the connection is established.</p>
+<p>Many of these are optional. For example, if we write pass on
+fxp0 rather than pass out on fxp0, then traffic will be allowed in
+both directions, in and out.</p>
+<p>If you look through /etc/services, you'll see that some things,
+such as ipp, port 631 used with CUPS, use both tcp and udp. To deal
+with such things, we could insert another macro</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+
+udp_pass = "{ 631 }"
+</pre></td>
+</tr>
+</table>
+<p>We might find that sending email isn't working properly.
+Checking /etc/services we find that smtp can use udp.</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+grep smtp /etc/services
+smtp             25/tcp    mail         #Simple Mail Transfer
+smtp             25/udp    mail         #Simple Mail Transfer
+smtps           465/tcp    #smtp protocol over TLS/SSL (was ssmtp)
+smtps           465/udp    #smtp protocol over TLS/SSL (was ssmtp)
+</pre></td>
+</tr>
+</table>
+<p>However, with our new macro, this is simple--we simply add it to
+udp_pass</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+udp_pass = "{ 110 631 }"
+</pre></td>
+</tr>
+</table>
+<p>Now, let's add the udp_pass macro to our ruleset</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass = "{ 22 25 80 110 123 }"
+udp_pass = "{ 110 631 }"
+block all
+pass out on fxp0 proto tcp to any port $tcp_pass keep state
+pass out on fxp0 proto udp to any port $udp_pass keep state
+</pre></td>
+</tr>
+</table>
+<p>However, we find CUPS isn't working. A quick grep of ipp in
+/etc/services shows that it also uses tcp. So, we add 631 to our
+list of ports in the tcp_pass macro. Now we have</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass = "{ 22 25 80 110 123 631 }"
+udp_pass = "{ 110 631 }"
+block all
+pass out on fxp0 proto tcp to any port $tcp_pass keep state
+pass out on fxp0 proto udp to any port $udp_pass keep state
+</pre></td>
+</tr>
+</table>
+<p>The same holds true for any other ports that you've forgotten.
+For instance, these rules don't allow DNS, port 53. We grep domain
+in /etc/services, and see that it uses both tcp and udp so we add
+53 to both macros</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcp_pass = "{ 22 25 53 80 110 123 631 }"
+udp_pass = "{ 53 110 631 }"
+</pre></td>
+</tr>
+</table>
+<h4>Using the quick keyword</h4>
+Packets going in and out are matched against an entire ruleset
+before being passed or blocked. Sometimes, you want to speed things
+up and either quickly block or quickly pass a package.
+<p>In such cases, you can use the quick keyword. If a packet
+matches something in that line, it stops going through the rules
+and processes the packet. For example, let's say that you have a
+web server on your LAN behind a firewall, and you are sure that all
+requests for port 80 are coming from your internal network, so you
+want to quickly pass them through. (I can't see that being true in
+real life, but this is for an example of using quick).</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass in quick on fxp0 proto tcp to any port 80 keep state
+</pre></td>
+</tr>
+</table>
+<p>Put that above the other rules, right after the macro
+definitions. Now, requests coming in for the LAN webserver will be
+passed right though (note that in this case it was pass in) without
+being matched against the rest of the ruleset.</p>
+<h4>Tables</h4>
+Tables are useful and fast. They are used to hold a group of
+addresses. For instance, suppose you want to allow everything in
+from your local networks, 192.168.8.0 and 192.168.9.0
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+table &lt;local&gt; { 192.168.8.0/24, 192.168.9.0/24 }
+</pre></td>
+</tr>
+</table>
+<p>Insert that line above your rules. Now, to allow everything from
+those two networks (and we'll make use of the quick keyword as
+well) add a rule. Since we're using quick we want this rule towards
+the top. If it was at the end, there's no point in using the quick
+keyword, for the packets would have already been matched against
+every rule above this one</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass in quick from &lt;local&gt; to any keep state
+</pre></td>
+</tr>
+</table>
+Sometimes, you might have mistyped something, so it's always good to
+check your tables.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -t local -T show
+</pre>
+</td>
+</tr>
+</table>
+<p>
+will show you the contents of your table.  
+Note that if you edit your pf.conf, adding a table, and then simply
+pfctl -d and -e, to disable and re-enable pf, the table rules may not be
+applied.  The way to do it is
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -t local -Tl -f /etc/pf.conf
+</pre>
+</td>
+</tr>
+</table>
+<p>
+The -t is for the table name, in this case, local.  The -T is used to
+give various commands.  In this case, we are using l for
+load.  That is a lower case letter L, not the numeral one. The -f is for
+file, in this case, /etc/pf.conf where we have added the table. <p>
+We can use pfctl for various useful table commands.  We've already
+mentioned the show command. 
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -t mytable -T show
+</pre>
+</td>
+</tr>
+</table>
+<p>
+will show you the current working contents of a table called mytable.
+If you keep mytable in a static file, for example, /etc/pf.mytable, and
+edit the file, the way to get pf to use it is
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -t mytable -T replace -f pf.mytable <img src="1.png">
+</pre>
+</td>
+</tr>
+</table>
+<p>
+<img src="1.png">When using a text file, create a line in pf.conf like
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+table &lt;mytable&gt; persist file "/etc/pf.mytable"
+</pre>
+</td>
+</tr>
+</table>
+<p>
+In this case, it is replacing whatever the former contents of mytable were
+with the latest contents of mytable.<p>
+Tables can be added and deleted on the fly, see the links at the end of
+this article for more details.  To add or delete an address to a table on
+the fly, one can use, to add the address 192.168.1.115 to a table called
+mytable
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -t mytable -T add 192.168.1.115
+</pre>
+</td>
+</tr>
+</table>
+<p>
+To remove the address 
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -t mytable -T delete 192.168.1.115
+</pre>
+</td>
+</tr>
+</table>
+<p>
+This all takes effect immediately.  As mentioned above, you can confirm that the desired
+address has been added or deleted with 
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -t mytable -T show
+</pre>
+</td>
+</tr>
+</table>
+<p>
+Another popular use of tables is to block bruteforce attacks.  
+This can go directly into pf.conf 
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+table &lt;bruteforce&gt;
+block in quick from &ltbruteforce&gt;
+pass in inet proto tcp from any to any port ssh \
+flags S/SA keep state \
+(max-src-conn 10 max-src-conn-rate 10/30, \
+overload &lt;bruteforce&gt; flush global)
+</pre>
+</td>
+</tr>
+</table>
+<p>
+This will block any IP trying to connect more than 10 times in 30 seconds.
+You may want much higher numbers, depending upon circumstances. In the <a
+href="https://home.nuug.no/~peter/pf/en/bruteforce.html">Peter Hansteen
+article</a> that showed me this, he has a max-src-conn at 100 and
+max-src-conn-rate at 15/5.<p>
+
+<h4>Anchors</h4>
+Like tables, anchors can be added on the fly.  However, tables are more
+for addresses and anchors are for rules.  They can be handy while
+testing rulesets.<p>
+For example, I have an anchor to allow me to use ftp.
+I create a file that reads
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass out proto tcp from any to port 21 keep state
+pass out proto tcp from any to port > 1023 keep state
+</pre>
+</td>
+</tr>
+</table>
+I save it as /etc/ftp-anchor and at end of my /etc/pf.conf file put
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+anchor ftpanchor
+</pre>
+</td>
+</tr>
+</table>
+<p>
+Now, I want to grab something from ftp.FreeBSD.org. 
+I load the anchor ruleset.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -a ftpanchor -f /etc/ftp-anchor
+</pre>
+</td>
+</tr>
+</table>
+<p>
+I can check that the rules are loaded.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -a ftpanchor -s rules
+</pre>
+</td>
+</tr>
+</table>
+The -a is for anchor.  In the first command the -f was for the file that
+we are using.  The second command uses -s as in show to show the rules.
+I should get a reponse to that command showing the anchor ruleset of
+passing out proto tcp on ports 21 and everything above port 1023<p>
+Now I do whatever I had to do.  I want to remove those rules.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -a ftpanchor -F rules
+</pre>
+</td>
+</tr>
+</table>
+Doing the pfctl -a ftpanchor -s rules should now give me no response.  My
+pf ruleset is back to normal.  <p>
+One can edit the anchor ruleset and reload and unload it at will without
+having to restart pf or reload the entire pf.conf ruleset.  It's handy
+for testing various rules.  For example, perhaps I also need to allow
+out udp to do what I want.  Rather than adding a line to pf.conf and
+reloading the entire ruleset, I can edit /etc/ftp-anchor, add a line
+to allow out udp, then reload the anchor with pfctl -a -f
+/etc/ftp-anchor again.  Once again, when finished, I can flush the
+anchor rules and my pf ruleset is back to normal.
+(One doesn't need udp for ftp, but this is for example.)
+<p>
+If you think you will usually want to have the anchor in place, and only
+unload it on rare occasions, you would add, below the anchor line
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+load anchor ftpanchor from "/etc/ftp-anchor"
+</pre>
+</td>
+</tr>
+</table>
+Now, the anchor will load whenever pf starts.  
+<p>
+Anchors are quite flexible.  The above gives very simple examples.  The
+more detailed guides listed at the end of this article go into greater
+detail.
+  
+<p>
+
+<h4>The pfctl command</h4>
+We've already mentioned the pfctl command. It does a variety of
+things--as you can guess from its name, it controls pf. 
+It's used to
+enable, disable, reload and flush rulesets as well as give status.
+I'l just cover a few of the main uses here, check the man page. You
+might remember the cronjob we made will simply disable the packet
+filter. That's a simple -d flag
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+sudo pfctl -d
+</pre></td>
+</tr>
+</table>
+To test the syntax of rules without loading them we can use -n 
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -n -v -f /etc/pf.conf
+</pre>
+</td>
+</tr>
+</table>
+<p>
+The -v is for verbose and the -f for the file.
+<p>To put the packet filter we've created into effect, assuming you
+are user john and you've created it in your home directory, as
+john</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+sudo pfctl -ef pf.conf
+</pre></td>
+</tr>
+</table>
+<p>The -f stands for file. Say we've checked it out and we don't
+like it so we want to go back to our default rules, in /etc/</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+sudo pfctl -f /etc/pf.conf
+</pre></td>
+</tr>
+</table>
+It used to be pfctl -Rf /etc/pf.conf but (and last I looked the man page
+doesn't mention that) if you do so you'll get a message that you must
+enable table loading for optimization.  So, just use pfctl -f /etc/pf.conf
+
+<p>There are a variety of uses for pfctl. Doing pfctl -s info gives
+you a quick look at what's going on. Doing pfctl -vs rules shows
+you your rules and what's happening, for example</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass out proto tcp from any to any port = http keep state
+  [ Evaluations: 96        Packets: 906       Bytes: 496407      States: 0     ]
+pass out proto tcp from any to any port = pop3 keep state
+  [ Evaluations: 96        Packets: 514       Bytes: 71260       States: 0     ]
+</pre></td>
+</tr>
+</table>
+<p>The man page gives a complete list.</p>
+<p>Now it's time to test this. It's early morning, and I'm not
+thinking that clearly. Hopefully, however, I've remembered to add
+myself to sudoers as being able to run pfctl without a password and
+remember to quickly set up the cronjob so that if I make a mistake,
+pf will be disabled shortly. (VERY necessary if you're testing this
+on a machine to which you don't have physical access). So, I put
+these rules which I've saved into a file pf.conf in my home
+directory into operation.</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+sudo pfctl -ef pf.conf
+</pre></td>
+</tr>
+</table>
+<p>I find that I've locked myself out of the box. Oops. I forgot to
+allow ssh connections in, and the connection that I was using has
+just been blocked.</p>
+<p>So, I wait a few minutes for the crontab to disable pf and log
+back into the remote machine. This time, I remember to add a
+rule</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass in proto tcp to port 22 keep state
+</pre></td>
+</tr>
+</table>
+<p>Now, these rules seem to be working. So, I copy them over to
+/etc/pf.conf.</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+sudo cp pf.conf /etc/
+sudo pftcl -f /etc/pf.conf
+sudo pftcl -s rules
+</pre></td>
+</tr>
+</table>
+<p>Listing the rules will show me that it's doing what I want to
+do.</p>
+<p>Now, of course, I remove the cronjob. If you're going to be
+experimenting with your rules frequently, and will be needing it
+again, just do crontab -e and comment the line out with a #.</p>
+<h4>A few odds and ends</h4>
+Using ftp with pf can be problematic. For detailed explanations of
+workarounds, see the <a href="#frequently">more detailed guides</a>
+referenced at the end of this article. In a nutshell, you have to
+redirect them to a proxy. The only trick that I don't believe
+is mentioned in the more detailed guides is that it has to go above
+your filtering rules. Otherwise, you'll get an error message that
+rules must be in order options, normalization, etc.<p>
+Most of what is covered in the more advanced guides seems to be aimed at
+having an ftp server.  To simply use an ftp client from your workstation, 
+rather than use the rdr (for redirect) rules, you might simply 
+use an anchor to allow out proto tcp while using ftp.  I gave an example
+in the section about anchors.
+
+
+<p>There is also the scrub keyword. Again, while this is more fully
+explained in the references <a href="#frequently">below</a> in a
+nutshell it normalizes fragmented packets. The usual line is</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+scrub in all
+</pre></td>
+</tr>
+</table>
+<p>This rule must also go above the filtering rules (and above the
+rdr to redirect ftp if you use it.) It is the "normalization"
+referred to in that error message. At the top of the ruleset you
+define your macros, tables and the like. Then would come the scrub
+rule, then the rdr rule, then your filtering rules (the group that
+in our example begins with block all). Using the scrub keyword can
+help protect against certain kinds of attacks, and it's a good line
+to have.</p>
+<p>In FreeBSD, one of the older versions, (5.something or perhaps 6.0)
+you have to add the pf module to your kernel.  In later versions, it's
+not necessary, it will load the module if listed in /etc/rc.conf.
+Check /usr/src/sys/conf/NOTES to see the various options, but 
+I just had</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+device          pf
+device          pflog
+device          pfsync
+</pre></td>
+</tr>
+</table>
+<p>I also have</p>
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+options         ALTQ
+</pre></td>
+</tr>
+</table>
+<p>in my kernel. Although I don't make use of queuing, otherwise,
+one gets a warning every time they reload their pf rules that ALTQ
+isn't enabled in the kernel.</p>
+(I'm not sure if this is still needed or not, all the boxes I have still
+have it in their custom kernels and I've never removed it.)<p>
+<p>If you use the module, it assumes the presence of device bpf,
+INET and INET6 in the kernel. (See the <a href=
+"http://www.freebsd.org/doc/en_US.ISO8859-1/books/handbook/firewalls-pf.html">
+handbook page</a> on pf.)</p>
+<h3>Logging</h3>
+Logging is done by adding the log keyword to a rule. First, in
+/etc/rc.conf, you should have the lines
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pflog_enable="YES"
+pflog_logfile="/var/log/pf.log"
+</pre>
+</td>
+</tr>
+</table>
+<p>
+The log keyword comes after pass or block in or out.  For example, we have a rule
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass out proto tcp from any to port 21 keep state
+</pre>
+</td>
+</tr>
+</table>
+<p>
+To log it, we would change that line to read
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pass out log proto tcp from any to port 21 keep state
+</pre>
+</td>
+</tr>
+</table>
+<p>
+You may have to run the command touch /var/log/pf.log, or it may be
+automatically created.   After this is done, restart pf
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+pfctl -f /etc/pf.rules
+</pre>
+</td>
+</tr>
+</table>
+<p>
+It isn't in readable form, you have to use tcpdump
+to read it. 
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcpdump -n -e -ttt -r /var/log/pf.log
+</pre>
+</td>
+</tr>
+</table>
+<p>
+To read it in realtime
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+tcpdump -n -e -ttt -i pflog0
+</pre>
+</td>
+</tr>
+</table>
+<p>
+<h3>Nat and redirection</h3>
+It's pretty easy to use pf for NAT and redirection.  One common use I've
+seen is with a FreeBSD jail server, cloning its lo interface to give said
+interface a private range of addresses.  Then use pf to redirect queries on
+say, 80 (and/or 443) to that address.  
+First we clone the interface. In the 
+system's /etc/rc.conf we put
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+cloned_interfaces=lo1"
+ipv4_addrs_lo1="192.168.1.1-9/29"
+</pre>
+</td>
+</tr>
+</table>
+<p>
+(That is a lower case L, lowercase letter O, and the numeral one, as in loopback one.)
+That gives a range from 192.168.1.1 to 192.168.1.9.  To do this on the fly,
+the commands are
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+ifconfig lo1 create
+ifconfig lo1 inet 192.168.1.1/29 
+</pre>
+</td>
+</tr>
+</table>
+<p>
+I haven't needed this often enough to figure out the syntax of creating
+multiple lo1 addresses with ifconfig.  If I were doing it on the fly, I
+would set up rc.conf as mentioned, but use an alias on the command line,
+e.g.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+ifconfig lo1 alias 192.168.1.2/29. 
+</pre>
+</td>
+</tr>
+</table>
+<p>
+(You could also use aliases in /etc/rc.conf instead of the syntax I
+have--as the saying goes, in Unix there's always more than one way to do
+something with a corollary that someone thinks your way is stupid, but I
+digress.)<p>
+
+We'll assume you have a public address of 5.6.7.8 and you will
+redirect inquiries to your webserver running on cloned lo1 interface
+192.168.1.1.  Our public network interface will be bce0.  We'll assume the
+reader has built a jail to host their web server.  I have a page on <a
+href="freebsdjail.html"> jails</a> for readers looking to get started with
+them. <p>
+Now we edit /etc/pf.conf. At the top, we define macros.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+IP_PUB="5.6.7.8"
+NETJAIL="192.168.1.1"
+WEBPORT="{ 80, 443 }"
+
+scrub in all
+nat pass on bce0 proto tcp from $NETJAIL to any -> $IP_PUB
+nat pass on bce0 proto udp from $NETJAIL to any -> $IP_PUB  <img src="1.png">
+rdr pass on bce0 proto tcp from any to $IP_PUB port $WEBPORT -> $NETJAIL
+</pre>
+</td>
+</tr>
+</table>
+<p>
+<img src="1.png"> These two lines allow things from the jail to go out through the
+public interface, in case that wasn't clear. It may not even be
+necessary.  In some cases, you may need tcp but not udp. The user can adapt
+it to their needs.
+<p>
+These should all be added above rules, otherwise, one gets an error that
+rules must be in order; options, normalization, queueing, translation,
+filtering. <p>
+
+We can add other jails.  For example, if we did give lo1 a range of
+addresses, we might have 192.168.1.2 be a jail running MySQL.  
+Create a couple of new macros.
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+SQLJAIL="192.168.1.2"
+SQLPORT="{ 3306 }"
+</pre>
+</td>
+</tr>
+</table>
+<p>
+Then add  
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+rdr pass on bce0 proto tcp from any to $IP_PUB port $SQLPORT -> $SQLJAIL
+</pre>
+</td>
+</tr>
+</table>
+<p>
+(Or, as we expect 3306 to be the only port used, don't bother making a
+macro for  it, just have the rule read  from any to $IP_PUB port 3306.  As
+long as the reader understands the syntax, they can do adapt it to their
+needs.) 
+
+
+<p>This page is only meant to be an introduction. However, if
+you've understood these simple rulesets, you're probably ready to
+look at the more sophisticated tutorials. The two that I use most
+<a name="frequently" id="frequently">frequently</a> are the
+<a href="http://www.openbsd.org/faq/pf/index.html">OpenBSD PF
+User's Guide</a> and <a href=
+"http://rlworkman.net/howtos/OpenBSD_pf_guide.html">Peter N.M.
+Hansteen's tutorial</a> Feel free to <a href=
+"mailto:scottro11@gmail.com">email me</a> if you detect any
+glaring errors. I am no expert on pf, but hope that this brief
+introduction will make it easier for the novice to grasp its basic
+concepts.</p>
+There have been various, sometimes significant, divergence in OpenBSD's and
+FreeBSD's pf syntax, so the more recent OpenBSD guides may not work as
+expected in FreeBSD.  To get the older OpenBSD faqs, you can use cvs.
+For the 4.1 version use
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+cvs -d anoncvs@anoncvs1.ca.openbsd.org:/cvs get -D "May 2, 2007" www/faq/pf
+</pre>
+</td>
+</tr>
+</table>
+<p>
+To get the 4.5 version
+<table border="0" bgcolor="#E8E8E8">
+<tr>
+<td>
+<pre>
+cvs -d anoncvs@anoncvs1.ca.openbsd.org:/cvs get -D "May 2, 2009" www/faq/pf
+</pre>
+</td>
+</tr>
+</table>
+<p>
+(Thanks to <a href="http://daemonforums.org/">daemonforums</a> user jggimi
+for that tip.)
+<center><script language="JavaScript" type="text/javascript">
+if (Date.parse(document.lastModified) > 0) {
+document.write ('<b>last modified: <\/b>' + document.lastModified +'<p>');
+}
+document.write('<b> url:<\/b>' + document.location.href + '<\/font><p>');
+</script>
+<hr width="60%" align="center"></center>
+</body>
+</html>
